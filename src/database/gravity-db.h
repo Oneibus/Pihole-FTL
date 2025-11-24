@@ -71,6 +71,19 @@ bool gravityDB_delFromTable(const enum gravity_list_type listtype, const cJSON* 
 bool gravityDB_edit_groups(const enum gravity_list_type listtype, cJSON *groups,
                            const tablerow *row, const char **message);
 
+// Client-Group management functions
+bool gravityDB_getClientGroups(const int client_id, const char **message);
+bool gravityDB_getClientGroupsRow(tablerow *row, const char **message);
+void gravityDB_getClientGroupsFinalize(void);
+bool gravityDB_addClientGroup(const int client_id, const int group_id, const char **message);
+bool gravityDB_deleteClientGroups(const cJSON *array, unsigned int *deleted, const char **message);
+
+// Group utility functions
+bool gravityDB_isGroupEmpty(const int group_id, const char **message);
+bool gravityDB_getGroupAssignmentCounts(const int group_id, int *client_count, 
+                                        int *domain_count, int *adlist_count, const char **message);
+bool gravityDB_deleteGroupWithAssignments(const int group_id, const char **message);
+
 time_t gravity_last_updated(void) __attribute__((pure));
 
 #endif //GRAVITY_H

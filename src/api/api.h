@@ -100,6 +100,12 @@ int api_dns_blocking(struct ftl_conn *api);
 int api_list(struct ftl_conn *api);
 int api_group(struct ftl_conn *api);
 
+// Client-group methods
+int api_client_groups(struct ftl_conn *api);
+
+// Group utility methods
+int api_groups_util(struct ftl_conn *api);
+
 // Auth method
 void init_api(void);
 void free_api(void);

@@ -2828,6 +2828,307 @@ bool gravity_updated(void)
 	return changed;
 }
 
+// Client-Group management functions
+static sqlite3_stmt* client_groups_stmt = NULL;
+
+bool gravityDB_getClientGroups(const int client_id, const char **message)
+{
+	if(gravity_db == NULL)
+	{
+		*message = "Database not available";
+		return false;
+	}
+
+	// Build query to get client-group assignments
+	// If client_id is -1, get all assignments
+	// Otherwise, get assignments for specific client
+	const char *querystr;
+	if(client_id < 0)
+	{
+		querystr = "SELECT cbg.client_id, c.ip AS client_ip, cbg.group_id, g.name AS group_name "
+		           "FROM client_by_group cbg "
+		           "JOIN client c ON c.id = cbg.client_id "
+		           "JOIN \"group\" g ON g.id = cbg.group_id "
+		           "ORDER BY cbg.client_id, cbg.group_id;";
+	}
+	else
+	{
+		querystr = "SELECT cbg.client_id, c.ip AS client_ip, cbg.group_id, g.name AS group_name "
+		           "FROM client_by_group cbg "
+		           "JOIN client c ON c.id = cbg.client_id "
+		           "JOIN \"group\" g ON g.id = cbg.group_id "
+		           "WHERE cbg.client_id = :client_id "
+		           "ORDER BY cbg.group_id;";
+	}
+
+	// Prepare statement
+	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &client_groups_stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_getClientGroups(%d) - SQL error prepare: %s",
+		        client_id, *message);
+		return false;
+	}
+
+	// Bind client_id if filtering by specific client
+	if(client_id >= 0)
+	{
+		const int idx = sqlite3_bind_parameter_index(client_groups_stmt, ":client_id");
+		if(idx > 0 && (rc = sqlite3_bind_int(client_groups_stmt, idx, client_id)) != SQLITE_OK)
+		{
+			*message = sqlite3_errmsg(gravity_db);
+			log_err("gravityDB_getClientGroups(%d): Failed to bind client_id: %s",
+			        client_id, *message);
+			sqlite3_reset(client_groups_stmt);
+			sqlite3_finalize(client_groups_stmt);
+			client_groups_stmt = NULL;
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool gravityDB_getClientGroupsRow(tablerow *row, const char **message)
+{
+	if(client_groups_stmt == NULL)
+	{
+		*message = "Statement not prepared";
+		return false;
+	}
+
+	// Perform step
+	const int rc = sqlite3_step(client_groups_stmt);
+
+	// Clear row data
+	memset(row, 0, sizeof(*row));
+
+	// Valid row
+	if(rc == SQLITE_ROW)
+	{
+		// Extract data from result row
+		row->id = sqlite3_column_int(client_groups_stmt, 0);          // client_id
+		row->client = (char*)sqlite3_column_text(client_groups_stmt, 1); // client_ip
+		row->number = sqlite3_column_int(client_groups_stmt, 2);      // group_id
+		row->name = (char*)sqlite3_column_text(client_groups_stmt, 3);   // group_name
+
+		return true;
+	}
+
+	// Check for error
+	if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_getClientGroupsRow() - SQL error step: %s", *message);
+		return false;
+	}
+
+	// Finished reading all rows
+	return false;
+}
+
+void gravityDB_getClientGroupsFinalize(void)
+{
+	if(client_groups_stmt != NULL)
+	{
+		sqlite3_finalize(client_groups_stmt);
+		client_groups_stmt = NULL;
+	}
+}
+
+bool gravityDB_addClientGroup(const int client_id, const int group_id, const char **message)
+{
+	if(gravity_db == NULL)
+	{
+		*message = "Database not available";
+		return false;
+	}
+
+	// Validate client_id and group_id exist
+	// First check if client exists
+	const char *check_client_query = "SELECT COUNT(*) FROM client WHERE id = ?;";
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(gravity_db, check_client_query, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_addClientGroup(%d, %d) - SQL error prepare client check: %s",
+		        client_id, group_id, *message);
+		return false;
+	}
+
+	sqlite3_bind_int(stmt, 1, client_id);
+	rc = sqlite3_step(stmt);
+	if(rc != SQLITE_ROW || sqlite3_column_int(stmt, 0) == 0)
+	{
+		*message = "Client ID does not exist";
+		sqlite3_finalize(stmt);
+		return false;
+	}
+	sqlite3_finalize(stmt);
+
+	// Check if group exists
+	const char *check_group_query = "SELECT COUNT(*) FROM \"group\" WHERE id = ?;";
+	rc = sqlite3_prepare_v2(gravity_db, check_group_query, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_addClientGroup(%d, %d) - SQL error prepare group check: %s",
+		        client_id, group_id, *message);
+		return false;
+	}
+
+	sqlite3_bind_int(stmt, 1, group_id);
+	rc = sqlite3_step(stmt);
+	if(rc != SQLITE_ROW || sqlite3_column_int(stmt, 0) == 0)
+	{
+		*message = "Group ID does not exist";
+		sqlite3_finalize(stmt);
+		return false;
+	}
+	sqlite3_finalize(stmt);
+
+	// Insert or ignore (if already exists) client-group assignment
+	const char *querystr = "INSERT OR IGNORE INTO client_by_group (client_id, group_id) VALUES (?, ?);";
+	rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_addClientGroup(%d, %d) - SQL error prepare: %s",
+		        client_id, group_id, *message);
+		return false;
+	}
+
+	// Bind parameters
+	if((rc = sqlite3_bind_int(stmt, 1, client_id)) != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_addClientGroup(%d, %d): Failed to bind client_id: %s",
+		        client_id, group_id, *message);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	if((rc = sqlite3_bind_int(stmt, 2, group_id)) != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_addClientGroup(%d, %d): Failed to bind group_id: %s",
+		        client_id, group_id, *message);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	// Execute statement
+	rc = sqlite3_step(stmt);
+	bool okay = (rc == SQLITE_DONE);
+	if(!okay)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_addClientGroup(%d, %d) - SQL error step: %s",
+		        client_id, group_id, *message);
+	}
+
+	sqlite3_finalize(stmt);
+	return okay;
+}
+
+bool gravityDB_deleteClientGroups(const cJSON *array, unsigned int *deleted, const char **message)
+{
+	if(gravity_db == NULL)
+	{
+		*message = "Database not available";
+		return false;
+	}
+
+	// Validate array
+	if(!cJSON_IsArray(array))
+	{
+		*message = "Argument is not an array";
+		log_err("gravityDB_deleteClientGroups(): %s", *message);
+		return false;
+	}
+
+	// Begin transaction
+	const char *querystr = "BEGIN TRANSACTION;";
+	int rc = sqlite3_exec(gravity_db, querystr, NULL, NULL, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteClientGroups() - SQL error exec(\"%s\"): %s",
+		        querystr, *message);
+		return false;
+	}
+
+	// Prepare delete statement
+	querystr = "DELETE FROM client_by_group WHERE client_id = ? AND group_id = ?;";
+	sqlite3_stmt *stmt = NULL;
+	rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteClientGroups() - SQL error prepare: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	// Process each item in array
+	*deleted = 0u;
+	cJSON *item = NULL;
+	cJSON_ArrayForEach(item, array)
+	{
+		// Extract client_id and group_id
+		cJSON *json_client_id = cJSON_GetObjectItemCaseSensitive(item, "client_id");
+		cJSON *json_group_id = cJSON_GetObjectItemCaseSensitive(item, "group_id");
+
+		if(!cJSON_IsNumber(json_client_id) || !cJSON_IsNumber(json_group_id))
+		{
+			log_warn("gravityDB_deleteClientGroups(): Skipping invalid item (missing or non-numeric IDs)");
+			continue;
+		}
+
+		int client_id = json_client_id->valueint;
+		int group_id = json_group_id->valueint;
+
+		// Bind parameters
+		sqlite3_reset(stmt);
+		sqlite3_bind_int(stmt, 1, client_id);
+		sqlite3_bind_int(stmt, 2, group_id);
+
+		// Execute
+		rc = sqlite3_step(stmt);
+		if(rc != SQLITE_DONE)
+		{
+			*message = sqlite3_errmsg(gravity_db);
+			log_err("gravityDB_deleteClientGroups(%d, %d) - SQL error step: %s",
+			        client_id, group_id, *message);
+			sqlite3_finalize(stmt);
+			sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+			return false;
+		}
+
+		// Count affected rows
+		*deleted += sqlite3_changes(gravity_db);
+	}
+
+	// Finalize statement
+	sqlite3_finalize(stmt);
+
+	// Commit transaction
+	querystr = "COMMIT TRANSACTION;";
+	rc = sqlite3_exec(gravity_db, querystr, NULL, NULL, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteClientGroups() - SQL error exec(\"%s\"): %s",
+		        querystr, *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	return true;
+}
+
 time_t __attribute__((pure)) gravity_last_updated(void)
 {
 	return last_updated > 0 ? (time_t)last_updated : 0;

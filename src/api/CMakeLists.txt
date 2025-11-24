@@ -15,9 +15,11 @@ set(sources
         api.c
         auth.c
         auth.h
+        client_groups.c
         config.c
         dhcp.c
         dns.c
+        groups_util.c
         network.c
         padd.c
         history.c
