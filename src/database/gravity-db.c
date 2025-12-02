@@ -3131,5 +3131,234 @@ bool gravityDB_deleteClientGroups(const cJSON *array, unsigned int *deleted, con
 
 time_t __attribute__((pure)) gravity_last_updated(void)
 {
-	return last_updated > 0 ? (time_t)last_updated : 0;
+        return last_updated > 0 ? (time_t)last_updated : 0;
+}
+
+// Check if a group has no assignments (no clients, adlists, or domains)
+bool gravityDB_isGroupEmpty(const int group_id, const char **message)
+{
+	// Check if gravity database is available
+	if(gravity_db == NULL)
+	{
+		*message = "Database not available";
+		return false;
+	}
+
+	// Count total assignments for this group across all three tables
+	const char *querystr = "SELECT " \
+		"(SELECT COUNT(*) FROM client_by_group WHERE group_id = ?) + " \
+		"(SELECT COUNT(*) FROM adlist_by_group WHERE group_id = ?) + " \
+		"(SELECT COUNT(*) FROM domainlist_by_group WHERE group_id = ?) AS total";
+	
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_isGroupEmpty() - SQL error prepare: %s", *message);
+		return false;
+	}
+
+	// Bind group_id to all three placeholders
+	sqlite3_bind_int(stmt, 1, group_id);
+	sqlite3_bind_int(stmt, 2, group_id);
+	sqlite3_bind_int(stmt, 3, group_id);
+
+	// Execute query
+	rc = sqlite3_step(stmt);
+	bool is_empty = false;
+	
+	if(rc == SQLITE_ROW)
+	{
+		int total_count = sqlite3_column_int(stmt, 0);
+		is_empty = (total_count == 0);
+	}
+	else if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_isGroupEmpty() - SQL error step: %s", *message);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	sqlite3_finalize(stmt);
+	return is_empty;
+}
+
+// Get counts of assignments for a group
+bool gravityDB_getGroupAssignmentCounts(const int group_id, int *client_count,
+                                        int *adlist_count, int *domain_count, const char **message)
+{
+	// Check if gravity database is available
+	if(gravity_db == NULL)
+	{
+		*message = "Database not available";
+		return false;
+	}
+
+	// Initialize counts
+	*client_count = 0;
+	*adlist_count = 0;
+	*domain_count = 0;
+
+	// Query to get all counts in one go
+	const char *querystr = "SELECT " \
+		"(SELECT COUNT(*) FROM client_by_group WHERE group_id = ?) AS clients, " \
+		"(SELECT COUNT(*) FROM adlist_by_group WHERE group_id = ?) AS adlists, " \
+		"(SELECT COUNT(*) FROM domainlist_by_group WHERE group_id = ?) AS domains";
+	
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_getGroupAssignmentCounts() - SQL error prepare: %s", *message);
+		return false;
+	}
+
+	// Bind group_id to all three placeholders
+	sqlite3_bind_int(stmt, 1, group_id);
+	sqlite3_bind_int(stmt, 2, group_id);
+	sqlite3_bind_int(stmt, 3, group_id);
+
+	// Execute query
+	rc = sqlite3_step(stmt);
+	
+	if(rc == SQLITE_ROW)
+	{
+		*client_count = sqlite3_column_int(stmt, 0);
+		*adlist_count = sqlite3_column_int(stmt, 1);
+		*domain_count = sqlite3_column_int(stmt, 2);
+	}
+	else if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_getGroupAssignmentCounts() - SQL error step: %s", *message);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+// Delete a group and all its assignments
+bool gravityDB_deleteGroupWithAssignments(const int group_id, const char **message)
+{
+	// Check if gravity database is available
+	if(gravity_db == NULL)
+	{
+		*message = "Database not available";
+		return false;
+	}
+
+	// Begin transaction
+	const char *querystr = "BEGIN TRANSACTION;";
+	int rc = sqlite3_exec(gravity_db, querystr, NULL, NULL, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error exec(\"%s\"): %s",
+		        querystr, *message);
+		return false;
+	}
+
+	// Delete from client_by_group
+	querystr = "DELETE FROM client_by_group WHERE group_id = ?";
+	sqlite3_stmt *stmt = NULL;
+	rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error prepare client_by_group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+	sqlite3_bind_int(stmt, 1, group_id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error step client_by_group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	// Delete from adlist_by_group
+	querystr = "DELETE FROM adlist_by_group WHERE group_id = ?";
+	rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error prepare adlist_by_group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+	sqlite3_bind_int(stmt, 1, group_id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error step adlist_by_group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	// Delete from domainlist_by_group
+	querystr = "DELETE FROM domainlist_by_group WHERE group_id = ?";
+	rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error prepare domainlist_by_group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+	sqlite3_bind_int(stmt, 1, group_id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error step domainlist_by_group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	// Delete from group table
+	querystr = "DELETE FROM \"group\" WHERE id = ?";
+	rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error prepare group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+	sqlite3_bind_int(stmt, 1, group_id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if(rc != SQLITE_DONE)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error step group: %s", *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	// Commit transaction
+	querystr = "COMMIT TRANSACTION;";
+	rc = sqlite3_exec(gravity_db, querystr, NULL, NULL, NULL);
+	if(rc != SQLITE_OK)
+	{
+		*message = sqlite3_errmsg(gravity_db);
+		log_err("gravityDB_deleteGroupWithAssignments() - SQL error exec(\"%s\"): %s",
+		        querystr, *message);
+		sqlite3_exec(gravity_db, "ROLLBACK TRANSACTION;", NULL, NULL, NULL);
+		return false;
+	}
+
+	return true;
 }

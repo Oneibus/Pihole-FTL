@@ -96,9 +96,18 @@ int mbed_sslctx_set_ciphersuites(mbedtls_ssl_config *conf, const char *cipher_li
 		}
 		const mbedtls_ssl_ciphersuite_t *ciphersuite = mbedtls_ssl_ciphersuite_from_string(token);
 		if (ciphersuite != NULL) {
-			const int id = mbedtls_ssl_ciphersuite_get_id(ciphersuite);
-			DEBUG_TRACE("Adding ciphersuite '%s' (ID %d)", token, id);
-			ciphersuites[count++] = id;
+			// mbedtls 3.x: iterate through all ciphersuites to find the ID
+			int id = -1;
+			for (const int *p = mbedtls_ssl_list_ciphersuites(); *p != 0; p++) {
+				if (mbedtls_ssl_ciphersuite_from_id(*p) == ciphersuite) {
+					id = *p;
+					break;
+				}
+			}
+			if (id != -1) {
+				DEBUG_TRACE("Adding ciphersuite '%s' (ID %d)", token, id);
+				ciphersuites[count++] = id;
+			}
 		}
 		token = strtok(NULL, ",");
 	}

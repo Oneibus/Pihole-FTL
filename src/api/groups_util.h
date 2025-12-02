@@ -14,6 +14,6 @@
 #include "webserver/http-common.h"
 
 // Handler for group utility endpoints
-int api_groups_util(struct ftl_conn *api);
+// Declaration is in api.h
 
 #endif // API_GROUPS_UTIL_H

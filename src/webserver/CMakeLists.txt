@@ -21,7 +21,7 @@ set(sources
         )
 
 add_library(webserver OBJECT ${sources})
-target_compile_options(webserver PRIVATE ${EXTRAWARN})
+target_compile_options(webserver PRIVATE ${EXTRAWARN} -Wno-redundant-decls -Wno-switch-enum)
 target_include_directories(webserver PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 add_subdirectory(civetweb)

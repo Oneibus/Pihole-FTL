@@ -14,6 +14,6 @@
 #include "webserver/http-common.h"
 
 // Main handler for /api/client_groups endpoints
-int api_client_groups(struct ftl_conn *api);
+// Declaration is in api.h
 
 #endif // API_CLIENT_GROUPS_H
